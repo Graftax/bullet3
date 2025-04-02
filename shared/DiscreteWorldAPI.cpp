@@ -31,22 +31,15 @@ void DiscreteWorld_destroy(void* worldHandle)
 		world->removeConstraint(world->getConstraint(0));
 	}
 
-	//btCollisionObjectArray& collObjects = world->getCollisionObjectArray();
-	//for (int i = 0; i < world->getNumCollisionObjects(); ++i)
-	//{
-	//	btCollisionObject* currCollObj = collObjects[i];
-	//	btRigidBody* body = btRigidBody::upcast(currCollObj);
-	//	if (body != nullptr && body->getMotionState())
-	//		delete body->getMotionState();
+	// We need to delete the wrold first, so save off stuff to delete.
+	btDispatcher* dispatcher = world->getDispatcher();
+	btBroadphaseInterface* broadphase = world->getBroadphase();
+	btConstraintSolver* solver = world->getConstraintSolver();
 
-	//	world->removeCollisionObject(currCollObj);
-	//	delete currCollObj;
-	//}
-
-	delete world->getDispatcher();
-	delete world->getBroadphase();
-	delete world->getConstraintSolver();
 	delete world;
+	delete dispatcher;
+	delete broadphase;
+	delete solver;
 }
 
 extern "C" __declspec(dllexport) 

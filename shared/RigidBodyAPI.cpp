@@ -33,8 +33,6 @@ void RigidBody_destroy(void* rigidBodyPtr)
 	delete rigidbody;
 }
 
-// https://learn.microsoft.com/en-us/dotnet/framework/interop/passing-structures?redirectedfrom=MSDN
-
 extern "C" __declspec(dllexport)
 void RigidBody_getWorldPosition(void* bodyHandle, float* outPosition)
 {
@@ -47,15 +45,41 @@ void RigidBody_getWorldPosition(void* bodyHandle, float* outPosition)
 	outPosition[2] = origin.m_floats[2];
 }
 
-extern "C" __declspec(dllexport)
-btQuaternion RigidBody_getWorldRotation(void* bodyHandle)
+extern "C" __declspec(dllexport) 
+void RigidBody_setWorldPosition(void* bodyHandle, float* position)
 {
 	btRigidBody* body = static_cast<btRigidBody*>(bodyHandle);
+	btTransform& transform = body->getWorldTransform();
+
+	btVector3 origin = btVector3(position[0], position[1], position[2]);
+	transform.setOrigin(origin);
+}
+
+extern "C" __declspec(dllexport)
+void RigidBody_getWorldRotation(void* rigidBodyPtr, float* outRotation)
+{
+	btRigidBody* body = static_cast<btRigidBody*>(rigidBodyPtr);
+	btTransform& transform = body->getWorldTransform();
+	btMatrix3x3& basis = transform.getBasis();
 
 	btQuaternion rotation;
-	body->getWorldTransform().getBasis().getRotation(rotation);
+	basis.getRotation(rotation);
 
-	return rotation;
+	outRotation[0] = rotation.getX();
+	outRotation[1] = rotation.getY();
+	outRotation[2] = rotation.getZ();
+	outRotation[3] = rotation.getW();
+}
+
+extern "C" __declspec(dllexport) 
+void RigidBody_setWorldRotation(void* rigidBodyPtr, float* rotation)
+{
+	btRigidBody* body = static_cast<btRigidBody*>(rigidBodyPtr);
+	btTransform& transform = body->getWorldTransform();
+	btMatrix3x3& basis = transform.getBasis();
+
+	btQuaternion worldRot = btQuaternion(rotation[0], rotation[1], rotation[2], rotation[3]);
+	basis.setRotation(worldRot);
 }
 
 extern "C" __declspec(dllexport)
