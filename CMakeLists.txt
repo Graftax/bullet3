@@ -443,8 +443,8 @@ IF(BUILD_EXTRAS)
 ENDIF(BUILD_EXTRAS)
 
 SUBDIRS(src)
-
 SUBDIRS(shared)
+SUBDIRS(codegami)
 
 IF("${CMAKE_GENERATOR}" MATCHES "Unix Makefiles")
 	OPTION(INSTALL_LIBS "Set when you want to install libraries" ON)

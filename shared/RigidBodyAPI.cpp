@@ -4,6 +4,8 @@
 
 #include "LinearMath/btDefaultMotionState.h"
 
+#include <memory>
+
 extern "C" __declspec(dllexport) 
 void* RigidBody_create(float mass, void* shapeHandle)
 {
@@ -27,22 +29,20 @@ extern "C" __declspec(dllexport)
 void RigidBody_destroy(void* rigidBodyPtr)
 {
 	btRigidBody* rigidbody = static_cast<btRigidBody*>(rigidBodyPtr);
-	if (rigidbody != nullptr && rigidbody->getMotionState() != nullptr)
+	if (rigidbody->getMotionState() != nullptr)
 		delete rigidbody->getMotionState();
 
 	delete rigidbody;
 }
 
-extern "C" __declspec(dllexport)
-void RigidBody_getWorldPosition(void* bodyHandle, float* outPosition)
+extern "C" __declspec(dllexport) 
+void RigidBody_getWorldPosition(void* bodyHandle, btVector3* outPosition)
 {
 	btRigidBody* body = static_cast<btRigidBody*>(bodyHandle);
 	btTransform& transform = body->getWorldTransform();
 	btVector3& origin = transform.getOrigin();
 
-	outPosition[0] = origin.m_floats[0];
-	outPosition[1] = origin.m_floats[1];
-	outPosition[2] = origin.m_floats[2];
+	(*outPosition) = origin;
 }
 
 extern "C" __declspec(dllexport) 
@@ -53,6 +53,7 @@ void RigidBody_setWorldPosition(void* bodyHandle, float* position)
 
 	btVector3 origin = btVector3(position[0], position[1], position[2]);
 	transform.setOrigin(origin);
+	body->activate();
 }
 
 extern "C" __declspec(dllexport)
@@ -80,6 +81,7 @@ void RigidBody_setWorldRotation(void* rigidBodyPtr, float* rotation)
 
 	btQuaternion worldRot = btQuaternion(rotation[0], rotation[1], rotation[2], rotation[3]);
 	basis.setRotation(worldRot);
+	body->activate();
 }
 
 extern "C" __declspec(dllexport)
@@ -87,6 +89,7 @@ void RigidBody_setLinearVelocity(void* bodyHandle, btVector3 vel)
 {
 	btRigidBody* body = static_cast<btRigidBody*>(bodyHandle);
 	body->setLinearVelocity(vel);
+	body->activate();
 }
 
 extern "C" __declspec(dllexport)
@@ -94,4 +97,5 @@ void RigidBody_setAngularVelocity(void* bodyHandle, btVector3 angVel)
 {
 	btRigidBody* body = static_cast<btRigidBody*>(bodyHandle);
 	body->setAngularVelocity(angVel);
+	body->activate();
 }

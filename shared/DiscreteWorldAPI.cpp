@@ -6,12 +6,17 @@
 #include "BulletCollision/CollisionDispatch/btCollisionDispatcher.h"
 #include "BulletCollision/BroadphaseCollision/btDbvtBroadphase.h"
 
+#include "LinearMath/btSerializer.h"
+
+#include "../Extras/Serialize/BulletWorldImporter/btBulletWorldImporter.h"
+
 static btDefaultCollisionConfiguration CollisionConfigDefault = btDefaultCollisionConfiguration();
 
 extern "C" __declspec(dllexport) 
 void* DiscreteWorld_create()
 {
 	btCollisionDispatcher* collDispatcher = new btCollisionDispatcher(&CollisionConfigDefault);
+
 	btDbvtBroadphase* broadPhase = new btDbvtBroadphase();
 	btSequentialImpulseConstraintSolver* solver = new btSequentialImpulseConstraintSolver();
 
@@ -25,11 +30,6 @@ extern "C" __declspec(dllexport)
 void DiscreteWorld_destroy(void* worldHandle)
 {
 	btDiscreteDynamicsWorld* world = static_cast<btDiscreteDynamicsWorld*>(worldHandle);
-
-	while (world->getNumConstraints() > 0)
-	{
-		world->removeConstraint(world->getConstraint(0));
-	}
 
 	// We need to delete the wrold first, so save off stuff to delete.
 	btDispatcher* dispatcher = world->getDispatcher();
@@ -60,11 +60,11 @@ void DiscreteWorld_stepSimulation(void* worldHandle, float timeDelta)
 }
 
 extern "C" __declspec(dllexport) 
-void DiscreteWorld_addRigidBody(void* worldHandle, void* rigidBodyHandle)
+void DiscreteWorld_addRigidBody(void* objectPtr, void* rigidBodyHandle)
 {
-	btDiscreteDynamicsWorld* world = static_cast<btDiscreteDynamicsWorld*>(worldHandle);
+	btDiscreteDynamicsWorld* castObjectPtr = static_cast<btDiscreteDynamicsWorld*>(objectPtr);
 	btRigidBody* body = static_cast<btRigidBody*>(rigidBodyHandle);
-	world->addRigidBody(body);
+	castObjectPtr->addRigidBody(body);
 }
 
 extern "C" __declspec(dllexport) 
@@ -81,4 +81,25 @@ void DiscreteWorld_removeRigidBody(void* worldHandle, void* rigidBodyHandle)
 	btDiscreteDynamicsWorld* world = static_cast<btDiscreteDynamicsWorld*>(worldHandle);
 	btRigidBody* body = static_cast<btRigidBody*>(rigidBodyHandle);
 	world->removeRigidBody(body);
+}
+
+extern "C" __declspec(dllexport) 
+void DiscreteWorld_serialize(void* worldPtr, void* serializerPtr)
+{
+	btDiscreteDynamicsWorld* world = static_cast<btDiscreteDynamicsWorld*>(worldPtr);
+	btSerializer* serializer = static_cast<btSerializer*>(serializerPtr);
+	world->serialize(serializer);
+}
+
+extern "C" __declspec(dllexport) 
+void DiscreteWorld_deserialize(void* worldPtr, void* serializerPtr)
+{
+	btSerializer* serializer = static_cast<btSerializer*>(serializerPtr);
+	btDiscreteDynamicsWorld* world = static_cast<btDiscreteDynamicsWorld*>(worldPtr);
+
+	btBulletWorldImporter* importer = new btBulletWorldImporter(world);
+	importer->setImporterFlags(btWorldImporterFlags::eRESTORE_EXISTING_OBJECTS);
+	importer->loadFileFromMemory((char*)serializer->getBufferPointer(), serializer->getCurrentBufferSize());
+
+	delete importer;
 }
