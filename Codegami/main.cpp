@@ -5,6 +5,7 @@
 #include <regex>
 #include <filesystem>
 #include <map>
+#include <algorithm>
 
 struct Parameter
 {
@@ -18,11 +19,13 @@ struct Method
 	std::string Name;
 	std::vector<Parameter> Parameters;
 	bool IsConstructor;
+	bool IsAbstract;
 	bool IsReturnTypeConst;
 
 	Method()
 	{
 		IsConstructor = false;
+		IsAbstract = false;
 		IsReturnTypeConst = false;
 	}
 };
@@ -66,6 +69,13 @@ struct MethodCall
 
 		return doc.append("\n");
 	}
+};
+
+struct Object
+{
+	std::string Type;
+	std::string Name;
+	std::vector<Method> Methods;
 };
 
 struct StaticCast
@@ -132,27 +142,128 @@ struct CDeclWrapperMethod
 
 		return doc;
 	}
-};
 
-std::vector<std::string> extractConstructors(std::string className, std::string document)
-{
-	std::regex constructorExpression(R"(\s()" + className + R"(\(.*\);))",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
-
-	std::sregex_iterator constructorItr = std::sregex_iterator(document.begin(),
-		document.end(), constructorExpression);
-
-	std::vector<std::string> constructorLines;
-	std::sregex_iterator constructorEnd;
-	while (constructorItr != constructorEnd)
+	void addParameter(const Parameter& param)
 	{
-		std::string methodStr = constructorItr->operator[](1).str();
-		constructorLines.push_back(methodStr + "\n");
-		constructorItr++;
+		std::string extParamType = param.Type;
+		extParamType.erase(std::remove(extParamType.begin(), extParamType.end(), ' '), extParamType.end());
+
+		std::string extParamName = param.Name;
+		extParamName.erase(std::remove(extParamName.begin(), extParamName.end(), ' '), extParamName.end());
+
+		std::string innerParam = param.Name;
+		bool derefInnerParam = false;
+
+		size_t ampIndex = extParamType.find('&');
+		if (ampIndex != std::string::npos)
+		{
+			extParamType.replace(ampIndex, 1, "*");
+			derefInnerParam = true;
+		}
+
+		if (extParamType == "btScalar")
+			extParamType = "float";
+
+		Parameter extParam;
+		extParam.Name = extParamName;
+		extParam.Type = extParamType;
+		Parameters.push_back(extParam);
+
+		if (derefInnerParam)
+			innerParam = "(*" + innerParam + ")";
+
+		InnerCall.Parameters.push_back(innerParam);
 	}
 
-	return constructorLines;
-}
+	static bool IsBasicType(std::string type)
+	{
+		if (type == "bool")
+			return true;
+
+		if (type == "void*")
+			return true;
+
+		if (type == "int")
+			return true;
+
+		if (type == "float")
+			return true;
+
+		return false;
+	}
+
+	static CDeclWrapperMethod build(std::string className, const Method sourceMethod)
+	{
+		CDeclWrapperMethod currWrapper;
+
+		std::vector<Parameter>::const_iterator itrParam = sourceMethod.Parameters.begin();
+		while (itrParam != sourceMethod.Parameters.end())
+		{
+			currWrapper.addParameter((*itrParam));
+			itrParam++;
+		}
+
+		if (!sourceMethod.IsConstructor)
+		{
+			Parameter objInstanceParam;
+			objInstanceParam.Name = "objectPtr";
+			objInstanceParam.Type = "void*";
+			currWrapper.Parameters.insert(currWrapper.Parameters.begin(), objInstanceParam);
+
+			StaticCast instanceCast;
+			instanceCast.FromName = objInstanceParam.Name;
+			instanceCast.ToName = className + "Ptr";
+			instanceCast.ToType = className + "*";
+			currWrapper.StaticCasts.push_back(instanceCast);
+			currWrapper.InnerCall.InstanceName = instanceCast.ToName;
+		}
+
+		currWrapper.ClassName = className;
+		currWrapper.ReturnType = sourceMethod.ReturnType;
+		currWrapper.InnerCall.MethodName = sourceMethod.Name;
+
+		currWrapper.MethodName = std::regex_replace(currWrapper.InnerCall.MethodName, std::regex(R"(=)"), "_assign");
+		currWrapper.MethodName = std::regex_replace(currWrapper.MethodName, std::regex(R"(\*)"), "_multiply");
+		currWrapper.MethodName = std::regex_replace(currWrapper.MethodName, std::regex(R"(\(\))"), "_call");
+
+		if (currWrapper.ReturnType == "btScalar")
+			currWrapper.ReturnType = "float";
+
+		if (currWrapper.ReturnType.find('*') != std::string::npos)
+			currWrapper.ReturnType = "void*";
+
+		if (IsBasicType(currWrapper.ReturnType))
+		{
+			currWrapper.InnerCallPrefix = "return ";
+		}
+		else if (currWrapper.ReturnType != "void")
+		{
+			if (currWrapper.ReturnType.back() == '&')
+				currWrapper.ReturnType.pop_back();
+
+			Parameter objInstanceParam;
+			objInstanceParam.Name = currWrapper.ReturnType + "Out";
+			objInstanceParam.Type = currWrapper.ReturnType + "*";
+
+			currWrapper.Parameters.push_back(objInstanceParam);
+			currWrapper.InnerCallPrefix = "(*" + objInstanceParam.Name + ") = ";
+			currWrapper.ReturnType = "void";
+		}
+
+		if (sourceMethod.IsConstructor)
+		{
+			currWrapper.MethodName = "create";
+			currWrapper.ReturnType = "void*";
+			currWrapper.InnerCallPrefix = "return new ";
+			currWrapper.InnerCall.InstanceName = "";
+		}
+
+		if (sourceMethod.IsReturnTypeConst && currWrapper.ReturnType != "void")
+			currWrapper.ReturnType = std::string("const ") + currWrapper.ReturnType;
+
+		return currWrapper;
+	}
+};
 
 std::vector<Parameter> parseParameters(std::string line, std::string className, std::string classScope)
 {
@@ -160,19 +271,17 @@ std::vector<Parameter> parseParameters(std::string line, std::string className, 
 	size_t rParenPos = line.find_last_of(')') + 1;
 	std::string paramScope = line.substr(lParenPos, rParenPos - lParenPos);
 
-	// Update parameter extraction to grab namespace
-
 	std::vector<Parameter> results;
-	std::regex expParameters(R"((?:const\s+)?(?:class\s+)?([\w:]+\s?[&*]?)(?:\s+(\w+))?(?:[\w\W]*?,|[\w\W]*\)))",
+	std::regex expParameters(R"((?:^\(|,)\s*(?:(?:const|struct|class)\s+)*([^\d\s](?:\w+::)?\w+(?:<.+>)?\s*&?(?:\s*\*)*)\s?(\w+)?(?=(?:,|\)$|\s*=)))",
 		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	std::sregex_iterator paramItr(paramScope.begin(), paramScope.end(), expParameters);
 	int paramNumber = 1;
+
 	while (paramItr != std::sregex_iterator())
 	{
 		Parameter currParam;
 		currParam.Type = (*paramItr)[1].str();
-
 		currParam.Name = (*paramItr)[2].matched
 			? (*paramItr)[2].str()
 			: std::string("param") + std::to_string(paramNumber);
@@ -186,89 +295,11 @@ std::vector<Parameter> parseParameters(std::string line, std::string className, 
 			currType = currType.substr(0, currType.length() - 1);
 
 		// If the parameter is a struct declared in the class, just add scope to type
-		if (classScope.find(std::string("struct ") + currType) != std::string::npos)
+		std::regex structCheckExp(std::string(R"(struct\s*)") + currType + R"(\s*\{)");
+		if (std::regex_search(classScope, structCheckExp))
 			currParam.Type = className + "::" + currParam.Type;
 
 		results.push_back(currParam);
-	}
-
-	return results;
-}
-
-std::vector<Method> parseConstructors(std::string className, std::string classScope)
-{
-	std::vector<Method> results;
-	std::vector<std::string> methods = extractConstructors(className, classScope);
-	std::vector<std::string>::const_iterator funcItr = methods.begin();
-	while (funcItr != methods.end())
-	{
-		std::string currLine = (*funcItr);
-
-		Method currMethod;
-		currMethod.Name = className;
-		currMethod.Parameters = parseParameters(currLine, className, classScope);
-		currMethod.IsConstructor = true;
-		
-		funcItr++;
-		results.push_back(currMethod);
-	}
-
-	return results;
-}
-
-std::vector<std::string> extractMethods(std::string document)
-{
-	std::regex functionExpression(R"((?:\w+\ +)*?((?:const )?(?:\w+[\*\&]?)\ +\w+\(.*\))(?:\ +\w+\s*)?\s*[;{])",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
-
-	std::sregex_iterator funcsItr = std::sregex_iterator(document.begin(),
-		document.end(), functionExpression);
-
-	std::vector<std::string> functionLines;
-	std::sregex_iterator funcsEnd;
-	while (funcsItr != funcsEnd)
-	{
-		std::string methodStr = funcsItr->operator[](1).str();
-		functionLines.push_back(methodStr + "\n");
-		funcsItr++;
-	}
-
-	return functionLines;
-}
-
-std::vector<Method> parseMethods(std::string document, std::string className, std::string classScope)
-{
-	std::regex funcReturnTypeAndNameExtractor(R"((\w+[&*]?)?[\t ]+(\w+)\()",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
-
-	std::regex funcReturnTypeConstChecker(R"(const\s+.+\()",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
-
-	std::vector<Method> results;
-	std::vector<std::string> methods = extractMethods(document);
-	std::vector<std::string>::const_iterator funcItr = methods.begin();
-	while (funcItr != methods.end())
-	{
-		std::string currLine = (*funcItr);
-
-		std::smatch match;
-		if (!std::regex_search(currLine, match, funcReturnTypeAndNameExtractor))
-		{
-			funcItr++;
-			continue;
-		}
-
-		Method currMethod;
-		
-		if (std::regex_search(currLine, funcReturnTypeConstChecker))
-			currMethod.IsReturnTypeConst = true;
-
-		currMethod.ReturnType = match[1].str();
-		currMethod.Name = match[2].str();
-		currMethod.Parameters = parseParameters(currLine, className, classScope);
-
-		results.push_back(currMethod);
-		funcItr++;
 	}
 
 	return results;
@@ -308,201 +339,200 @@ std::string extractScope(std::string document)
 	return document;
 }
 
-std::vector<Method> extractClass(std::string document, std::string& outClassName)
+std::string::iterator findScopeEnd(std::string::iterator searchStart, 
+	std::string::const_iterator searchEnd)
 {
-	std::regex classExpression(R"((?:ATTRIBUTE_ALIGNED16\(class\)|class)\s+(\w+).*\n?\{)",
+	int leftCount = 0;
+	int rightCount = 0;
+	int startOffset = 0;
+
+	std::string::iterator& itr = searchStart;
+	while (itr != searchEnd)
+	{
+		if ((*itr) == '{')
+			leftCount++;
+
+		if ((*itr) == '}')
+			rightCount++;
+
+		if (leftCount > 0 && leftCount == rightCount)
+		{
+			return itr;
+		}
+
+		itr++;
+	}
+
+	return searchStart;
+}
+
+std::vector<Method> parseMethods(std::string document, std::string className)
+{
+	std::vector<Method> results;
+
+	// TODO: Check if method is abstrac and mark it, then dont create constructors if class has any abstract methods
+
+	const std::string LINE_START = R"(^[\t ]*)";
+	const std::string KEYWORDS = R"((?:\w+\s+)*?)";
+	const std::string RETURN_CAPTURE = R"(((?:\w+::)?\w*?[&*]?)\s*)";
+	const std::string NAME_CAPTURE = R"(([\w:=]+(?:\(\)|\*)?))";
+	const std::string PARAMS_CAPTURE = R"((\([\s\w&,=()*]*\)))";
+	const std::string POST_KEYWORDS = R"((?:\s*\w+)*)";
+	const std::string TERMINATOR = R"(.*?(?:;|[\s\w:(),-]*\{))";
+
+	std::regex funcDeclExtractor(LINE_START + KEYWORDS + RETURN_CAPTURE 
+		+ NAME_CAPTURE + PARAMS_CAPTURE + POST_KEYWORDS + TERMINATOR,
 		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
-	std::sregex_iterator classesItr = std::sregex_iterator(document.begin(),
-		document.end(), classExpression);
-
-	if (classesItr == std::sregex_iterator())
-		return std::vector<Method>();
-
-	std::sregex_iterator::value_type match = (*classesItr);
-	outClassName = match[1].str();
-
-	std::string scope = extractScope(document.substr(match.position()));
-
-	// We cant use captures when trying to extract from large pieces of text. []*
-	std::regex protectedExp(R"(protected\:[\s\S]*public\:)",
+	std::regex funcReturnTypeConstChecker(R"(^[\w\s]*const)",
 		std::regex_constants::ECMAScript | std::regex_constants::icase);
+
+	std::regex funcAbstractChecker(R"(=\s*0\s*;$)",
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
+
+	std::string::iterator searchFront = document.begin();
+	std::string::const_iterator searchEnd = document.end();
+	
+	while (searchFront != searchEnd)
+	{
+		std::smatch searchMatch;
+		// We need to cast to const iterators, which I did not expect. We have to
+		// use an iterator we can advance, but the end can be const.
+		if (!std::regex_search((std::string::const_iterator)searchFront,
+			searchEnd, searchMatch, funcDeclExtractor))
+		{
+			break;
+		}
+
+		std::string& methodDeclLine = searchMatch[0].str();
+
+		Method currMethod;
+
+		if (std::regex_search(methodDeclLine, funcReturnTypeConstChecker))
+			currMethod.IsReturnTypeConst = true;
+
+		if (std::regex_search(methodDeclLine, funcAbstractChecker))
+			currMethod.IsAbstract = true;
+
+		currMethod.ReturnType = searchMatch[1].str();
+		currMethod.Name = searchMatch[2].str();
+
+		if (currMethod.Name == className)
+		{
+			currMethod.IsConstructor = true;
+			currMethod.ReturnType = className + "*";
+		}
+
+		currMethod.Parameters = parseParameters(searchMatch[3].str(), className, document);
+
+		results.push_back(currMethod);
+		searchFront += searchMatch.position(0) + searchMatch.length() - 1;
+
+		if ((*searchFront) == '{')
+			searchFront = findScopeEnd(searchFront, searchEnd);
+	}
+
+	return results;
+}
+
+std::string filterObjectScope(std::string scope)
+{
+	std::regex commentExp(R"(\/\*[\w\W]*?\*\/)",
+						  std::regex_constants::ECMAScript | std::regex_constants::icase);
+
+	scope = std::regex_replace(scope, commentExp, "");
+
+	std::regex protectedExp(R"(protected\:[\s\S]*?public\:)",
+							std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	scope = std::regex_replace(scope, protectedExp, "");
 
 	std::regex definedExp(R"(#if defined(?:.*\n)*?\s*#endif)",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
+						  std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	scope = std::regex_replace(scope, definedExp, "");
 
-	std::vector<Method> methods = parseConstructors(outClassName, scope);
-		
-	for (Method currMethod : parseMethods(scope, outClassName, scope))
-	{
-		methods.push_back(currMethod);
-	}
+	std::regex alignedAllocatorExp(R"(BT_DECLARE_ALIGNED_ALLOCATOR\(\);)",
+								   std::regex_constants::ECMAScript | std::regex_constants::icase);
 
-	return methods;
+	scope = std::regex_replace(scope, alignedAllocatorExp, "");
+
+	return scope;
 }
 
-CDeclWrapperMethod buildCWrapper(std::string className, const Method sourceMethod)
+std::vector<Object> extractObjects(std::string document)
 {
-	CDeclWrapperMethod currWrapper;
+	std::regex extractObjectsExp(R"((?:ATTRIBUTE_ALIGNED16\()?(class|struct)\)?\s+(\w+).*\n?\{)",
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
-	std::vector<Parameter>::const_iterator itrParam = sourceMethod.Parameters.begin();
-	while (itrParam != sourceMethod.Parameters.end())
+	std::vector<Object> results;
+
+	std::string::iterator searchFront = document.begin();
+	std::string::const_iterator searchEnd = document.end();
+
+	while (searchFront != searchEnd)
 	{
-		Parameter currParam = (*itrParam);
-		std::string extParamType = currParam.Type;
-
-		if (extParamType == "btScalar")
-			extParamType = "float";
-
-		if (extParamType.find('*') != std::string::npos)
+		std::smatch searchMatch;
+		// We need to cast to const iterators, which I did not expect. We have to
+		// use an iterator we can advance, but the end can be const.
+		if (!std::regex_search((std::string::const_iterator)searchFront,
+							   searchEnd, searchMatch, extractObjectsExp))
 		{
-			extParamType = "void*";
-
-			StaticCast instanceCast;
-			instanceCast.FromName = currParam.Name;
-			instanceCast.ToName = currParam.Name + "Cast";
-			instanceCast.ToType = currParam.Type;
-			currWrapper.StaticCasts.push_back(instanceCast);
-			currWrapper.InnerCall.Parameters.push_back(instanceCast.ToName);
-		}
-		else if (extParamType == "btVector3&")
-		{
-			extParamType = "btVector3*";
-			currWrapper.InnerCall.Parameters.push_back("(*" + currParam.Name + ")");
-		}
-		else if (extParamType == "btQuaternion&")
-		{
-			extParamType = "btQuaternion*";
-			currWrapper.InnerCall.Parameters.push_back("(*" + currParam.Name + ")");
-		}
-		else if (extParamType == "btTransform&")
-		{
-			extParamType = "btTransform*";
-			currWrapper.InnerCall.Parameters.push_back("(*" + currParam.Name + ")");
-		}
-		else if (extParamType == "btRigidBodyConstructionInfo&")
-		{
-			extParamType = "btRigidBodyConstructionInfo*";
-			currWrapper.InnerCall.Parameters.push_back("(*" + currParam.Name + ")");
-		}
-		else
-		{
-			currWrapper.InnerCall.Parameters.push_back(currParam.Name);
+			break;
 		}
 
-		Parameter param;
-		param.Name = currParam.Name;
-		param.Type = extParamType;
-		currWrapper.Parameters.push_back(param);
+		Object foundObj;
+		foundObj.Type = searchMatch[1].str();
+		foundObj.Name = searchMatch[2].str();
 
-		itrParam++;
+		size_t scopeStart = std::distance(document.begin(), searchFront) 
+			+ searchMatch.position(0) + searchMatch.length(0) - 1;
+
+		std::string rawScope = extractScope(document.substr(scopeStart));
+		std::string scope = filterObjectScope(rawScope);
+
+		foundObj.Methods = parseMethods(scope, foundObj.Name);
+		results.push_back(foundObj);
+
+		searchFront += searchMatch.position(0) + searchMatch.length(0) + rawScope.length();
 	}
+
+	return results;
+}
+
+CDeclWrapperMethod createDefaultConstructor(std::string className)
+{
+	CDeclWrapperMethod constructor;
+	constructor.ClassName = className;
+	constructor.ReturnType = className + "*";
+	constructor.InnerCallPrefix = "return new ";
+	constructor.MethodName = "create";
+
+	constructor.InnerCall.MethodName = className;
+	return constructor;
+}
+
+CDeclWrapperMethod createDestructor(std::string className)
+{
+	CDeclWrapperMethod destructor;
+	destructor.ClassName = className;
+	destructor.ReturnType = "void";
+	destructor.InnerCallPrefix = "delete ";
+	destructor.MethodName = "destroy";
 
 	Parameter objInstanceParam;
 	objInstanceParam.Name = "objectPtr";
 	objInstanceParam.Type = "void*";
-	currWrapper.Parameters.insert(currWrapper.Parameters.begin(), objInstanceParam);
+	destructor.Parameters.insert(destructor.Parameters.begin(), objInstanceParam);
 
 	StaticCast instanceCast;
 	instanceCast.FromName = objInstanceParam.Name;
 	instanceCast.ToName = className + "Ptr";
 	instanceCast.ToType = className + "*";
-	currWrapper.StaticCasts.push_back(instanceCast);
+	destructor.StaticCasts.push_back(instanceCast);
+	destructor.InnerCall.InstanceName = instanceCast.ToName;
 
-	currWrapper.ClassName = className;
-	currWrapper.ReturnType = sourceMethod.ReturnType;
-	currWrapper.InnerCall.MethodName = sourceMethod.Name;
-	currWrapper.InnerCall.InstanceName = instanceCast.ToName;
-
-	if (currWrapper.ReturnType.find('*') != std::string::npos)
-	{
-		currWrapper.ReturnType = "void*";
-		currWrapper.InnerCallPrefix = "return ";
-	}
-
-	if (currWrapper.ReturnType == "btScalar")
-	{
-		currWrapper.ReturnType = "float";
-		currWrapper.InnerCallPrefix = "return ";
-	}
-
-	if (currWrapper.ReturnType == "bool")
-		currWrapper.InnerCallPrefix = "return ";
-
-	if (currWrapper.ReturnType == "int")
-		currWrapper.InnerCallPrefix = "return ";
-
-	if (currWrapper.ReturnType == "btVector3" || currWrapper.ReturnType == "btVector3&")
-	{
-		currWrapper.ReturnType = "void";
-
-		Parameter objInstanceParam;
-		objInstanceParam.Name = "btVector3Out";
-		objInstanceParam.Type = "btVector3*";
-		currWrapper.Parameters.push_back(objInstanceParam);
-		currWrapper.InnerCallPrefix = "(*" + objInstanceParam.Name + ") = ";
-	}
-
-	if (currWrapper.ReturnType == "btQuaternion" || currWrapper.ReturnType == "btQuaternion&")
-	{
-		currWrapper.ReturnType = "void";
-
-		Parameter objInstanceParam;
-		objInstanceParam.Name = "btQuaternionOut";
-		objInstanceParam.Type = "btQuaternion*";
-		currWrapper.Parameters.push_back(objInstanceParam);
-		currWrapper.InnerCallPrefix = "(*" + objInstanceParam.Name + ") = ";
-	}
-
-	if (currWrapper.ReturnType == "btMatrix3x3" || currWrapper.ReturnType == "btMatrix3x3&")
-	{
-		currWrapper.ReturnType = "void";
-
-		Parameter objInstanceParam;
-		objInstanceParam.Name = "btMatrix3x3Out";
-		objInstanceParam.Type = "btMatrix3x3*";
-		currWrapper.Parameters.push_back(objInstanceParam);
-		currWrapper.InnerCallPrefix += "(*" + objInstanceParam.Name + ") = ";
-	}
-
-	if (currWrapper.ReturnType == "btTransform" || currWrapper.ReturnType == "btTransform&")
-	{
-		currWrapper.ReturnType = "void";
-
-		Parameter objInstanceParam;
-		objInstanceParam.Name = "btTransformOut";
-		objInstanceParam.Type = "btTransform*";
-		currWrapper.Parameters.push_back(objInstanceParam);
-		currWrapper.InnerCallPrefix += "(*" + objInstanceParam.Name + ") = ";
-	}
-
-	if (currWrapper.ReturnType == "btDynamicsWorldType")
-	{
-		currWrapper.ReturnType = "void";
-
-		Parameter objInstanceParam;
-		objInstanceParam.Name = "btDynamicsWorldTypeOut";
-		objInstanceParam.Type = "btDynamicsWorldType*";
-		currWrapper.Parameters.push_back(objInstanceParam);
-		currWrapper.InnerCallPrefix += "(*" + objInstanceParam.Name + ") = ";
-	}
-
-	if (sourceMethod.IsConstructor)
-	{
-		currWrapper.MethodName = "create";
-		currWrapper.ReturnType = "void*";
-		currWrapper.InnerCallPrefix = "return new ";
-		currWrapper.InnerCall.InstanceName = "";
-	}
-
-	if (sourceMethod.IsReturnTypeConst)
-		currWrapper.ReturnType = std::string("const ") + currWrapper.ReturnType;
-
-	return currWrapper;
+	return destructor;
 }
 
 int main(int argc, char* argv[])
@@ -522,58 +552,65 @@ int main(int argc, char* argv[])
 	originDoc.assign(std::istreambuf_iterator<char>(inputFile),
 					 std::istreambuf_iterator<char>());
 
-	std::string className;
-	std::vector<Method> methods = extractClass(originDoc, className);
-
-	std::vector<CDeclWrapperMethod> wrappers;
-	for (const Method currMethod : methods)
-	{
-		wrappers.push_back(buildCWrapper(className, currMethod));
-	}
-
-	CDeclWrapperMethod destructor;
-	destructor.ClassName = className;
-	destructor.ReturnType = "void";
-	destructor.InnerCallPrefix = "delete ";
-	destructor.MethodName = "destroy";
-	
-	Parameter objInstanceParam;
-	objInstanceParam.Name = "objectPtr";
-	objInstanceParam.Type = "void*";
-	destructor.Parameters.insert(destructor.Parameters.begin(), objInstanceParam);
-
-	StaticCast instanceCast;
-	instanceCast.FromName = objInstanceParam.Name;
-	instanceCast.ToName = className + "Ptr";
-	instanceCast.ToType = className + "*";
-	destructor.StaticCasts.push_back(instanceCast);
-	destructor.InnerCall.InstanceName = instanceCast.ToName;
-	
-	wrappers.insert(wrappers.begin(), destructor);
-	
 	outputDoc.append("// GENERATED, DO NOT EDIT\n");
 	outputDoc.append("\n");
 	outputDoc.append(std::string("#include \"") + includePath + "\"\n");
 
-	std::map<std::string, int> nameCounts;
-
-	for (const CDeclWrapperMethod currWrapper : wrappers)
+	std::vector<Object> allObjects = extractObjects(originDoc);
+	for (Object currObj : allObjects)
 	{
-		if (nameCounts.find(currWrapper.GetMethodName()) == nameCounts.end())
-			nameCounts[currWrapper.GetMethodName()] = 0;
+		// Check for abstractness
+		bool isClassAbstract = false;
+		bool hasConstructor = false;
 
-		nameCounts[currWrapper.GetMethodName()]++;
-		int currCount = nameCounts[currWrapper.GetMethodName()];
-		
-		// Ommiting 1 for aesthetic reasons.
-		if (currCount == 1)
-			currCount = 0;
+		for (const Method currMethod : currObj.Methods)
+		{
+			if (currMethod.IsAbstract)
+				isClassAbstract = true;
 
-		outputDoc.append("\n");
-		outputDoc.append(currWrapper.ToString(currCount) + "\n");
+			if (currMethod.IsConstructor)
+				hasConstructor = true;
+		}
+
+		// Filter out constructors if abstract
+		std::vector<Method> methods;
+		std::copy_if(currObj.Methods.begin(), currObj.Methods.end(), std::back_inserter(methods), [&isClassAbstract](Method currM)
+					 { 
+		if (isClassAbstract && currM.IsConstructor)
+			return false;
+
+		return true; });
+
+		std::vector<CDeclWrapperMethod> wrappers;
+		for (const Method currMethod : methods)
+		{
+			wrappers.push_back(CDeclWrapperMethod::build(currObj.Name, currMethod));
+		}
+
+		wrappers.insert(wrappers.begin(), createDestructor(currObj.Name));
+
+		if (!hasConstructor)
+			wrappers.insert(wrappers.begin(), createDefaultConstructor(currObj.Name));
+
+		std::map<std::string, int> nameCounts;
+
+		for (const CDeclWrapperMethod currWrapper : wrappers)
+		{
+			if (nameCounts.find(currWrapper.GetMethodName()) == nameCounts.end())
+				nameCounts[currWrapper.GetMethodName()] = 0;
+
+			nameCounts[currWrapper.GetMethodName()]++;
+			int currCount = nameCounts[currWrapper.GetMethodName()];
+
+			// Ommiting 1 for aesthetic reasons.
+			if (currCount == 1)
+				currCount = 0;
+
+			outputDoc.append("\n");
+			outputDoc.append(currWrapper.ToString(currCount) + "\n");
+		}
 	}
 
-	
 	outputFile << outputDoc;
 
 	return 0;
