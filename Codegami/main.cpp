@@ -36,7 +36,7 @@ struct MethodCall
 	std::string MethodName;
 	std::vector<std::string> Parameters;
 
-	std::string ToString() const
+	std::string ToCDeclString() const
 	{
 		std::string doc;
 
@@ -83,7 +83,7 @@ struct StaticCast
 	std::string FromName;
 	std::string ToName;
 	std::string ToType;
-	std::string ToString()
+	std::string ToCDeclString()
 	{
 		return ToType + " " + ToName + " = static_cast<" + ToType + ">(" + FromName + ");";
 	}
@@ -104,7 +104,7 @@ struct CDeclWrapperMethod
 		return MethodName.length() > 0 ? MethodName : InnerCall.MethodName;
 	}
 
-	std::string ToString(int postfix = 0) const
+	std::string ToCDeclString(int postfix = 0) const
 	{
 		std::string doc;
 		doc.append(std::string(R"(extern "C" __declspec(dllexport))") + "\n");
@@ -134,12 +134,56 @@ struct CDeclWrapperMethod
 
 		for (StaticCast currCast : StaticCasts)
 		{
-			doc.append("\t" + currCast.ToString() + "\n");
+			doc.append("\t" + currCast.ToCDeclString() + "\n");
 		}
 
-		doc.append("\t" + InnerCallPrefix + InnerCall.ToString());
+		doc.append("\t" + InnerCallPrefix + InnerCall.ToCDeclString());
 		doc.append("}");
 
+		return doc;
+	}
+
+	std::string ToDLLImportString(int postfix = 0) const
+	{
+		std::string doc;
+		std::string managedReturnType = ReturnType;
+
+		if (managedReturnType.find("*") != std::string::npos)
+			managedReturnType = "IntPtr";
+
+		doc.append(std::string("\t\t[DllImport(\"BulletSharedLib_Debug\", CallingConvention = CallingConvention.Cdecl), SuppressUnmanagedCodeSecurity]\n"));
+		doc.append("\t\tpublic static extern " + managedReturnType + " " + ClassName + "_" + GetMethodName() + "(");
+
+		std::vector<Parameter>::const_iterator itrParam = Parameters.begin();
+		while (itrParam != Parameters.end())
+		{
+			Parameter currParam = (*itrParam);
+			std::string extParamType = currParam.Type;
+			
+			// TODO: create types on the c# side for use with mapping.
+			if (extParamType == "btVector3*")
+				extParamType = "BulletSharedLib.Vector3";
+
+			if (extParamType == "btQuaternion*")
+				extParamType = "BulletSharedLib.Quaternion";
+
+			if (extParamType == "btMatrix3x3*")
+				extParamType = "BulletSharedLib.Matrix3x3";
+
+			if (extParamType == "btTransform*")
+				extParamType = "BulletSharedLib.Transform";
+
+			if (extParamType.find("*") != std::string::npos)
+				extParamType = "IntPtr";
+
+			doc.append(extParamType + " " + currParam.Name);
+
+			itrParam++;
+			if (itrParam != Parameters.end())
+				doc.append(", ");
+		}
+
+		doc.append(");\n");
 		return doc;
 	}
 
@@ -438,22 +482,22 @@ std::vector<Method> parseMethods(std::string document, std::string className)
 std::string filterObjectScope(std::string scope)
 {
 	std::regex commentExp(R"(\/\*[\w\W]*?\*\/)",
-						  std::regex_constants::ECMAScript | std::regex_constants::icase);
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	scope = std::regex_replace(scope, commentExp, "");
 
 	std::regex protectedExp(R"(protected\:[\s\S]*?public\:)",
-							std::regex_constants::ECMAScript | std::regex_constants::icase);
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	scope = std::regex_replace(scope, protectedExp, "");
 
 	std::regex definedExp(R"(#if defined(?:.*\n)*?\s*#endif)",
-						  std::regex_constants::ECMAScript | std::regex_constants::icase);
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	scope = std::regex_replace(scope, definedExp, "");
 
 	std::regex alignedAllocatorExp(R"(BT_DECLARE_ALIGNED_ALLOCATOR\(\);)",
-								   std::regex_constants::ECMAScript | std::regex_constants::icase);
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
 
 	scope = std::regex_replace(scope, alignedAllocatorExp, "");
 
@@ -535,6 +579,90 @@ CDeclWrapperMethod createDestructor(std::string className)
 	return destructor;
 }
 
+void OutputCPP(std::string filePath, std::string includePath, std::vector<CDeclWrapperMethod> wrappers)
+{
+	std::ofstream outputFile(filePath + "CDecl.cpp");
+	std::string outputDoc;
+
+	outputDoc.append("// GENERATED, DO NOT EDIT\n");
+	outputDoc.append("\n");
+	outputDoc.append(std::string("#include \"") + includePath + "\"\n");
+
+	std::map<std::string, int> nameCounts;
+	for (const CDeclWrapperMethod currWrapper : wrappers)
+	{
+		if (nameCounts.find(currWrapper.GetMethodName()) == nameCounts.end())
+			nameCounts[currWrapper.GetMethodName()] = 0;
+
+		nameCounts[currWrapper.GetMethodName()]++;
+		int currCount = nameCounts[currWrapper.GetMethodName()];
+
+		// Ommiting 1 for aesthetic reasons.
+		if (currCount == 1)
+			currCount = 0;
+
+		outputDoc.append("\n");
+		outputDoc.append(currWrapper.ToCDeclString(currCount) + "\n");
+	}
+
+	outputFile << outputDoc;
+}
+
+void OutputCS(std::string filePath, const std::vector<CDeclWrapperMethod> wrappers)
+{
+	std::ofstream outputFile(filePath + "DLLImport.cs");
+	std::string outputDoc;
+
+	outputDoc.append("// GENERATED, DO NOT EDIT\n");
+	outputDoc.append("\n");
+	outputDoc.append("using System.Runtime.InteropServices;\n");
+	outputDoc.append("using System.Security;\n");
+	outputDoc.append("using System;\n");
+	outputDoc.append("\n");
+	outputDoc.append("namespace Graftax.Foundations.Physics\n");
+	outputDoc.append("{\n");
+
+	std::map<std::string, std::vector<CDeclWrapperMethod>> classToMethod;
+	for (const CDeclWrapperMethod currWrapper : wrappers)
+	{
+		classToMethod[currWrapper.ClassName].push_back(currWrapper);
+	}
+
+	outputDoc.append("\tpublic static partial class BulletSharedLib\n");
+	outputDoc.append("\t{\n");
+
+	std::map<std::string, std::vector<CDeclWrapperMethod>>::iterator itr = classToMethod.begin();
+	while (itr != classToMethod.end())
+	{
+		
+
+		std::map<std::string, int> nameCounts;
+		for (const CDeclWrapperMethod currWrapper : itr->second)
+		{
+			if (nameCounts.find(currWrapper.GetMethodName()) == nameCounts.end())
+				nameCounts[currWrapper.GetMethodName()] = 0;
+
+			nameCounts[currWrapper.GetMethodName()]++;
+			int currCount = nameCounts[currWrapper.GetMethodName()];
+
+			// Ommiting 1 for aesthetic reasons.
+			if (currCount == 1)
+				currCount = 0;
+
+			outputDoc.append(currWrapper.ToDLLImportString(currCount) + "\n");
+		}
+
+		
+		itr++;
+	}
+
+	outputDoc.append("\t}\n");
+	outputDoc.append("\n");
+	outputDoc.append("}\n");
+
+	outputFile << outputDoc;
+}
+
 int main(int argc, char* argv[])
 {
 	std::vector<std::string> args;
@@ -542,20 +670,23 @@ int main(int argc, char* argv[])
 	for (int i = 0; i < argc; ++i)
 		args.push_back(std::string(argv[i])); 
 
-	std::string outputDoc;
-
 	std::string includePath(args[2]);
 	std::ifstream inputFile(args[1] + args[2]);
-	std::ofstream outputFile(args[3]);
+	std::string outputPath = args[3];
+	
+	std::regex filenameExp(R"([\\/]?(\w+)$)",
+		std::regex_constants::ECMAScript | std::regex_constants::icase);
+
+	std::smatch match;
+	std::regex_search(outputPath, match, filenameExp);
+
+	std::string filename = match[1].str();
 
 	std::string originDoc;
 	originDoc.assign(std::istreambuf_iterator<char>(inputFile),
 					 std::istreambuf_iterator<char>());
 
-	outputDoc.append("// GENERATED, DO NOT EDIT\n");
-	outputDoc.append("\n");
-	outputDoc.append(std::string("#include \"") + includePath + "\"\n");
-
+	std::vector<CDeclWrapperMethod> wrappers;
 	std::vector<Object> allObjects = extractObjects(originDoc);
 	for (Object currObj : allObjects)
 	{
@@ -575,13 +706,14 @@ int main(int argc, char* argv[])
 		// Filter out constructors if abstract
 		std::vector<Method> methods;
 		std::copy_if(currObj.Methods.begin(), currObj.Methods.end(), std::back_inserter(methods), [&isClassAbstract](Method currM)
-					 { 
-		if (isClassAbstract && currM.IsConstructor)
-			return false;
+			{ 
+				if (isClassAbstract && currM.IsConstructor)
+					return false;
 
-		return true; });
+				return true; 
+			});
 
-		std::vector<CDeclWrapperMethod> wrappers;
+		
 		for (const Method currMethod : methods)
 		{
 			wrappers.push_back(CDeclWrapperMethod::build(currObj.Name, currMethod));
@@ -591,27 +723,10 @@ int main(int argc, char* argv[])
 
 		if (!hasConstructor)
 			wrappers.insert(wrappers.begin(), createDefaultConstructor(currObj.Name));
-
-		std::map<std::string, int> nameCounts;
-
-		for (const CDeclWrapperMethod currWrapper : wrappers)
-		{
-			if (nameCounts.find(currWrapper.GetMethodName()) == nameCounts.end())
-				nameCounts[currWrapper.GetMethodName()] = 0;
-
-			nameCounts[currWrapper.GetMethodName()]++;
-			int currCount = nameCounts[currWrapper.GetMethodName()];
-
-			// Ommiting 1 for aesthetic reasons.
-			if (currCount == 1)
-				currCount = 0;
-
-			outputDoc.append("\n");
-			outputDoc.append(currWrapper.ToString(currCount) + "\n");
-		}
 	}
 
-	outputFile << outputDoc;
+	OutputCPP(outputPath, includePath, wrappers);
+	OutputCS(outputPath, wrappers);
 
 	return 0;
 }

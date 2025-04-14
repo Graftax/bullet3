@@ -28,43 +28,57 @@ function(RunCodegami relPath outPath)
 add_custom_command(
 	COMMAND Codegami 
 		${BULLET_PHYSICS_SOURCE_DIR}/src/ ${relPath} ${outPath}
-	OUTPUT ${outPath}
+	OUTPUT ${outPath}CDecl.cpp ${outPath}DLLImport.cs
 	DEPENDS Codegami)
 endfunction()
 
-RunCodegami(LinearMath/btTransform.h ./Codegami/btTransformCDecl.cpp)
+RunCodegami(LinearMath/btTransform.h ./Codegami/btTransform)
+list(APPEND SOURCE_FILES Codegami/btTransformCDecl.cpp)
 
-RunCodegami(BulletCollision/BroadphaseCollision/btDbvtBroadphase.h ./Codegami/btDbvtBroadphaseCDecl.cpp)
-RunCodegami(BulletCollision/CollisionShapes/btCollisionShape.h ./Codegami/btCollisionShapeCDecl.cpp)
-RunCodegami(BulletCollision/CollisionDispatch/btCollisionDispatcher.h ./Codegami/btCollisionDispatcherCDecl.cpp)
-RunCodegami(BulletCollision/CollisionDispatch/btDefaultCollisionConfiguration.h ./Codegami/btDefaultCollisionConfigurationCDecl.cpp)
+RunCodegami(BulletCollision/BroadphaseCollision/btDbvtBroadphase.h ./Codegami/btDbvtBroadphase)
+list(APPEND SOURCE_FILES Codegami/btDbvtBroadphaseCDecl.cpp)
 
-RunCodegami(BulletDynamics/Dynamics/btRigidBody.h ./Codegami/btRigidBodyCDecl.cpp)
-RunCodegami(BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h ./Codegami/btDiscreteDynamicsWorldCDecl.cpp)
-RunCodegami(BulletDynamics/Featherstone/btMultiBodyConstraintSolver.h ./Codegami/btMultiBodyConstraintSolverCDecl.cpp)
-RunCodegami(BulletDynamics/Featherstone/btMultiBodyDynamicsWorld.h ./Codegami/btMultiBodyDynamicsWorldCDecl.cpp)
+RunCodegami(BulletCollision/CollisionShapes/btCollisionShape.h ./Codegami/btCollisionShape)
+list(APPEND SOURCE_FILES Codegami/btCollisionShapeCDecl.cpp)
 
-RunCodegami(../Extras/Serialize/BulletWorldImporter/btWorldImporter.h ./Codegami/btWorldImporterCDecl.cpp)
-RunCodegami(../Extras/Serialize/BulletWorldImporter/btMultiBodyWorldImporter.h ./Codegami/btMultiBodyWorldImporterCDecl.cpp)
+RunCodegami(BulletCollision/CollisionDispatch/btCollisionDispatcher.h ./Codegami/btCollisionDispatcher)
+list(APPEND SOURCE_FILES Codegami/btCollisionDispatcherCDecl.cpp)
 
+RunCodegami(BulletCollision/CollisionDispatch/btDefaultCollisionConfiguration.h ./Codegami/btDefaultCollisionConfiguration)
+list(APPEND SOURCE_FILES Codegami/btDefaultCollisionConfigurationCDecl.cpp)
 
+RunCodegami(BulletDynamics/Dynamics/btRigidBody.h ./Codegami/btRigidBody)
+list(APPEND SOURCE_FILES Codegami/btRigidBodyCDecl.cpp)
+
+RunCodegami(BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h ./Codegami/btDiscreteDynamicsWorld)
+list(APPEND SOURCE_FILES Codegami/btDiscreteDynamicsWorldCDecl.cpp)
+
+RunCodegami(BulletDynamics/Featherstone/btMultiBodyConstraintSolver.h ./Codegami/btMultiBodyConstraintSolver)
+list(APPEND SOURCE_FILES Codegami/btMultiBodyConstraintSolverCDecl.cpp)
+
+RunCodegami(BulletDynamics/Featherstone/btMultiBodyDynamicsWorld.h ./Codegami/btMultiBodyDynamicsWorld)
+list(APPEND SOURCE_FILES Codegami/btMultiBodyDynamicsWorldCDecl.cpp)
+
+RunCodegami(../Extras/Serialize/BulletWorldImporter/btWorldImporter.h ./Codegami/btWorldImporter)
+list(APPEND SOURCE_FILES Codegami/btWorldImporterCDecl.cpp)
+
+RunCodegami(../Extras/Serialize/BulletWorldImporter/btMultiBodyWorldImporter.h ./Codegami/btMultiBodyWorldImporter)
+list(APPEND SOURCE_FILES Codegami/btMultiBodyWorldImporterCDecl.cpp)
 
 # Add the source files to the project
-set(SOURCE_FILES
-	Codegami/btTransformCDecl.cpp
+#set(SOURCE_FILES
+#	Codegami/btDbvtBroadphaseCDecl.cpp
+#	Codegami/btCollisionShapeCDecl.cpp
+#	Codegami/btCollisionDispatcherCDecl.cpp
+#	Codegami/btDefaultCollisionConfigurationCDecl.cpp
 
-	Codegami/btDbvtBroadphaseCDecl.cpp
-	Codegami/btCollisionShapeCDecl.cpp
-	Codegami/btCollisionDispatcherCDecl.cpp
-	Codegami/btDefaultCollisionConfigurationCDecl.cpp
+#	Codegami/btRigidBodyCDecl.cpp
+#	Codegami/btDiscreteDynamicsWorldCDecl.cpp
+#	Codegami/btMultiBodyConstraintSolverCDecl.cpp
+#	Codegami/btMultiBodyDynamicsWorldCDecl.cpp
 
-	Codegami/btRigidBodyCDecl.cpp
-	Codegami/btDiscreteDynamicsWorldCDecl.cpp
-	Codegami/btMultiBodyConstraintSolverCDecl.cpp
-	Codegami/btMultiBodyDynamicsWorldCDecl.cpp
-
-	Codegami/btWorldImporterCDecl.cpp
-	Codegami/btMultiBodyWorldImporterCDecl.cpp)
+#	Codegami/btWorldImporterCDecl.cpp
+#	Codegami/btMultiBodyWorldImporterCDecl.cpp)
 
 # Add the header files to the project
 #set(HEADER_FILES
