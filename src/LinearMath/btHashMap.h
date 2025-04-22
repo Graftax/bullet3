@@ -112,7 +112,7 @@ class btHashPtr
 	};
 
 public:
-	btHashPtr(const void* ptr)
+	btHashPtr(const void* ptr = nullptr)
 		: m_pointer(ptr)
 	{
 	}
